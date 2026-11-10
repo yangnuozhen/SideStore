@@ -94,10 +94,10 @@ public class DeveloperPortalProxy {
         return try await ALTAppleAPI.shared.deleteDevice(device, team: team, session: session)
     }
 
-    public func fetchAppIDs(team: ALTTeam? = nil) async throws -> [ALTAppID] {
+    public func fetchAppIDs(team: ALTTeam? = nil, deviceType: ALTDeviceType = DeveloperPortalProxy.currentDeviceType) async throws -> [ALTAppID] {
         let session = try await self.getSession()
         let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.fetchAppIDs(for: team, session: session)
+        return try await ALTAppleAPI.shared.fetchAppIDs(for: team, deviceType: deviceType, session: session)
     }
 
     public func fetchAppIDs(for team: ALTTeam) async throws -> [ALTAppID] {
@@ -105,17 +105,17 @@ public class DeveloperPortalProxy {
     }
 
     @discardableResult
-    public func addAppID(name: String, bundleIdentifier: String, team: ALTTeam? = nil) async throws -> ALTAppID {
+    public func addAppID(name: String, bundleIdentifier: String, deviceType: ALTDeviceType = DeveloperPortalProxy.currentDeviceType, team: ALTTeam? = nil) async throws -> ALTAppID {
         let session = try await self.getSession()
         let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.addAppID(withName: name, bundleIdentifier: bundleIdentifier, team: team, session: session)
+        return try await ALTAppleAPI.shared.addAppID(withName: name, bundleIdentifier: bundleIdentifier, deviceType: deviceType, team: team, session: session)
     }
 
     @discardableResult
-    public func updateAppID(_ appID: ALTAppID, team: ALTTeam? = nil) async throws -> ALTAppID {
+    public func updateAppID(_ appID: ALTAppID, deviceType: ALTDeviceType = DeveloperPortalProxy.currentDeviceType, team: ALTTeam? = nil) async throws -> ALTAppID {
         let session = try await self.getSession()
         let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.updateAppID(appID, team: team, session: session)
+        return try await ALTAppleAPI.shared.updateAppID(appID, deviceType: deviceType, team: team, session: session)
     }
 
     @discardableResult
@@ -130,10 +130,10 @@ public class DeveloperPortalProxy {
         try await self.deleteAppID(appID, team: team)
     }
 
-    public func fetchAppGroups(team: ALTTeam? = nil) async throws -> [ALTAppGroup] {
+    public func fetchAppGroups(team: ALTTeam? = nil, deviceType: ALTDeviceType = DeveloperPortalProxy.currentDeviceType) async throws -> [ALTAppGroup] {
         let session = try await self.getSession()
         let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.fetchAppGroups(for: team, session: session)
+        return try await ALTAppleAPI.shared.fetchAppGroups(for: team, deviceType: deviceType, session: session)
     }
 
     public func fetchAppGroups(for team: ALTTeam) async throws -> [ALTAppGroup] {
@@ -141,10 +141,10 @@ public class DeveloperPortalProxy {
     }
 
     @discardableResult
-    public func addAppGroup(name: String, groupIdentifier: String, team: ALTTeam? = nil) async throws -> ALTAppGroup {
+    public func addAppGroup(name: String, groupIdentifier: String, deviceType: ALTDeviceType = DeveloperPortalProxy.currentDeviceType, team: ALTTeam? = nil) async throws -> ALTAppGroup {
         let session = try await self.getSession()
         let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.addAppGroup(name: name, groupIdentifier: groupIdentifier, team: team, session: session)
+        return try await ALTAppleAPI.shared.addAppGroup(name: name, groupIdentifier: groupIdentifier, deviceType: deviceType, team: team, session: session)
     }
 
     @discardableResult
@@ -155,10 +155,10 @@ public class DeveloperPortalProxy {
     }
 
     @discardableResult
-    public func assignAppID(_ appID: ALTAppID, to groups: [ALTAppGroup], team: ALTTeam? = nil) async throws -> ALTAppID {
+    public func assignAppID(_ appID: ALTAppID, to groups: [ALTAppGroup], deviceType: ALTDeviceType = DeveloperPortalProxy.currentDeviceType, team: ALTTeam? = nil) async throws -> ALTAppID {
         let session = try await self.getSession()
         let team = try await self.getTeam(team)
-        return try await ALTAppleAPI.shared.assign(appID, to: groups, team: team, session: session)
+        return try await ALTAppleAPI.shared.assignAppGroups(groups, to: appID, deviceType: deviceType, team: team, session: session)
     }
 
     @discardableResult

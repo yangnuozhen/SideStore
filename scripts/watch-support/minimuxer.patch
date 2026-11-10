@@ -1,0 +1,67 @@
+diff --git a/DeviceGateway/DeviceGatewayAPI.swift b/DeviceGateway/DeviceGatewayAPI.swift
+index 0a581fb..b2bdfa8 100644
+--- a/DeviceGateway/DeviceGatewayAPI.swift
++++ b/DeviceGateway/DeviceGatewayAPI.swift
+@@ -23,6 +23,18 @@ public struct PairedDeviceRecord: Sendable {
+     }
+ }
+ 
++public struct PairedWatchDevice: Sendable {
++    public let identifier: String
++    public let name: String
++    public let productVersion: String
++
++    public init(identifier: String, name: String, productVersion: String) {
++        self.identifier = identifier
++        self.name = name
++        self.productVersion = productVersion
++    }
++}
++
+ public protocol DeviceGatewayAPI: AnyObject, Sendable {
+     var requiresUsbmuxd: Bool { get }
+     var pairingFileType: PairingProtocol { get }
+@@ -37,6 +49,10 @@ public protocol DeviceGatewayAPI: AnyObject, Sendable {
+     func setDeviceEndpointIp(_ ip: String?)
+     func setLogging(_ enabled: Bool)
+ 
++    func fetchPairedWatch(pairingData: Data) async throws -> PairedWatchDevice
++    func installWatchApp(at url: URL, device: PairedWatchDevice, pairingData: Data) async throws
++    func removeWatchApp(bundleIdentifier: String, device: PairedWatchDevice, pairingData: Data) async throws
++
+     func fetchUDID() async throws -> String
+     func getLockdownValue(key: String) async throws -> String
+ 
+@@ -84,6 +100,18 @@ public protocol DeviceGatewayAPI: AnyObject, Sendable {
+ }
+ 
+ public extension DeviceGatewayAPI {
++    func fetchPairedWatch(pairingData: Data) async throws -> PairedWatchDevice {
++        throw DeviceGatewayError(.unsupportedOperation, reason: "Apple Watch requires the idevice backend")
++    }
++
++    func installWatchApp(at url: URL, device: PairedWatchDevice, pairingData: Data) async throws {
++        throw DeviceGatewayError(.unsupportedOperation, reason: "Apple Watch requires the idevice backend")
++    }
++
++    func removeWatchApp(bundleIdentifier: String, device: PairedWatchDevice, pairingData: Data) async throws {
++        throw DeviceGatewayError(.unsupportedOperation, reason: "Apple Watch requires the idevice backend")
++    }
++
+     func start(pairingFileContent: String, preferred: PairingProtocol? = nil) async throws {
+         try await start(pairingFileContent: pairingFileContent, preferred: preferred)
+     }
+diff --git a/DeviceGateway/Package.swift b/DeviceGateway/Package.swift
+index e71fb03..2601634 100644
+--- a/DeviceGateway/Package.swift
++++ b/DeviceGateway/Package.swift
+@@ -82,7 +82,8 @@ let package = Package(
+             dependencies: [
+                 "DeviceGatewayAPI",
+                 .product(name: "MinimuxerCommon", package: "Common"),
+-                "IDevice"
++                "IDevice",
++                .product(name: "OpenSSL", package: "RemotePairingKit")
+             ],
+             path: "idevice"
+         ),

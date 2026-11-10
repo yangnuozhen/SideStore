@@ -96,6 +96,17 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
                             storeBuildVersion: String?,
                             authTeam: ALTTeam) async throws -> InstalledApp
     {
+        if resignedAppBundle.containsWatchContent {
+            guard let watch = self.context.watchDevice else {
+                throw OperationError.invalidParameters("Missing Watch target after provisioning.")
+            }
+            if !resignedAppBundle.isWatchApp {
+                if UserDefaults.standard.preferResignedIPA { try await installIPA(self.context.targetBundleIdentifier) }
+                else { try await installAppBundle(self.context.targetBundleIdentifier, appName: resignedAppBundle.fileURL.lastPathComponent) }
+            }
+            // Do not mutate app records/expiration dates until the Watch acknowledges completion.
+            try await WatchAppSupport.install(resignedAppBundle, on: watch)
+        }
         let (installedApp, isDifferentSideStore, bundleID, isSelfReinstall, isSideBackup) = try await backgroundContext.perform {
             let utis = resignedAppBundle.infoPlist[Bundle.Info.exportedUTIs] as? [[String: Any]]
             let isSideBackup = utis?.first?["UTTypeDescription"] as? String == "SideStore Backup App"
@@ -185,7 +196,20 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
         }
         
         // Phase 2: App installation
-        if UserDefaults.standard.preferResignedIPA {
+        if resignedAppBundle.containsWatchContent {
+            guard let watch = self.context.watchDevice else {
+                throw OperationError.invalidParameters("Missing Watch target after provisioning.")
+            }
+            try await backgroundContext.perform {
+                let record: [String: Any] = ["DeviceIdentifier": watch.identifier, "WatchOnly": resignedAppBundle.isWatchApp,
+                                            "BundleIdentifiers": resignedAppBundle.watchAppBundles.map(\.bundleIdentifier)]
+                let data = try PropertyListSerialization.data(fromPropertyList: record, format: .binary, options: 0)
+                try FileManager.default.createDirectory(at: installedApp.directoryURL, withIntermediateDirectories: true)
+                try data.write(to: installedApp.watchInstallationURL, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
+                if let earliest = provisioningProfiles.values.map(\.expirationDate).min() { installedApp.expirationDate = earliest }
+                installedApp.isActive = true
+            }
+        } else if UserDefaults.standard.preferResignedIPA {
             try await installIPA(bundleID)
         } else {
             try await installAppBundle(bundleID, appName: resignedAppBundle.fileURL.lastPathComponent)
@@ -305,14 +329,14 @@ final class InstallAppOperation: BasePipelineOperation<InstallAppOperationContex
         }
 
         let originalExtensionsByFilename = Dictionary(
-            targetAppBundle.appExtensions.map { ($0.fileURL.lastPathComponent, $0) },
+            targetAppBundle.signingBundles.dropFirst().map { (String($0.fileURL.path.dropFirst(targetAppBundle.fileURL.path.count)), $0) },
             uniquingKeysWith: { first, _ in first }
         )
 
         var installedExtensions = Set<InstalledExtension>()
         
-        for resignedAppExtensionBundle in resignedAppBundle.appExtensions {
-            let filename = resignedAppExtensionBundle.fileURL.lastPathComponent
+        for resignedAppExtensionBundle in resignedAppBundle.signingBundles.dropFirst() {
+            let filename = String(resignedAppExtensionBundle.fileURL.path.dropFirst(resignedAppBundle.fileURL.path.count))
             guard let originalExtension = originalExtensionsByFilename[filename] else {
                 throw OperationError.invalidParameters("InstallAppOperation: extension '\(filename)' not found in targetAppBundle.")
             }

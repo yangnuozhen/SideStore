@@ -262,7 +262,8 @@ struct PipelineStepDefinition {
         case .resign:
             return resign
         case .refresh:
-            return refresh
+            // Re-sign and overwrite Watch apps; iPhone-only profile injection cannot refresh them.
+            return (operation.app as? InstalledApp)?.containsWatchContent == true ? resign : refresh
         case .activate:
             return UserDefaults.standard.isLegacyDeactivationSupported ? activateLegacy : activate
         case .deactivate:

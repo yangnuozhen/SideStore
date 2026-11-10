@@ -42,9 +42,21 @@ final class PatchInfoPlistOperation: BasePipelineOperation<InstallAppOperationCo
             }
 
             // 2. Apply custom Info.plist if available
-            if let customPlist = self.context.customInfoPlistByBundleID[bundle.bundleIdentifier] {
+            if var customPlist = self.context.customInfoPlistByBundleID[bundle.bundleIdentifier] {
+                if targetAppBundle.containsWatchContent {
+                    // Cached signed identifiers belong to the prior signing graph, not the source payload.
+                    customPlist.removeValue(forKey: "CFBundleIdentifier")
+                    customPlist.removeValue(forKey: "WKCompanionAppBundleIdentifier")
+                    if var extensionInfo = customPlist["NSExtension"] as? [String: any Sendable],
+                       var attributes = extensionInfo["NSExtensionAttributes"] as? [String: any Sendable] {
+                        attributes.removeValue(forKey: "WKAppBundleIdentifier")
+                        extensionInfo["NSExtensionAttributes"] = attributes
+                        customPlist["NSExtension"] = extensionInfo
+                    }
+                    self.context.customInfoPlistByBundleID[bundle.bundleIdentifier] = customPlist
+                }
                 do {
-                    if !bundle.isExtension {
+                    if bundle.fileURL == targetAppBundle.fileURL {
                         let customParser = InfoPlistParser(dictionary: customPlist)
                         if let customID = customParser.bundleIdentifier,
                            !customID.isEmpty,
@@ -63,7 +75,7 @@ final class PatchInfoPlistOperation: BasePipelineOperation<InstallAppOperationCo
 
             // 3. Register custom entitlements if available
             if let customEntitlements = self.context.customEntitlementsByBundleID[bundle.bundleIdentifier] {
-                if !bundle.isExtension {
+                if bundle.fileURL == targetAppBundle.fileURL {
                     for (key, value) in customEntitlements {
                         self.context.additionalEntitlements[ALTEntitlement(key)] = value
                     }
@@ -74,7 +86,7 @@ final class PatchInfoPlistOperation: BasePipelineOperation<InstallAppOperationCo
     }
     
     private func installedEntity(for bundle: ALTApplication) -> (any InstalledAppProtocol)? {
-        if bundle.isExtension {
+        if bundle.fileURL != self.context.targetAppBundle?.fileURL {
             return self.context.installedApp?.appExtensions.first(where: { $0.bundleIdentifier == bundle.bundleIdentifier })
         }
         return self.context.installedApp

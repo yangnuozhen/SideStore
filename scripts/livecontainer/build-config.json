@@ -1,0 +1,6 @@
+{
+  "livecontainer_repository": "LiveContainer/LiveContainer",
+  "livecontainer_revision": "9d6ea09b05afa2c8fc537c372795a294db631311",
+  "dylibify_repository": "LiveContainer/dylibify",
+  "dylibify_revision": "5daf713df9fb07724510490c88aa8e00061be14a"
+}

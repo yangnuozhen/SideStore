@@ -27,6 +27,12 @@ final class SendAppOperation: BasePipelineOperation<InstallAppOperationContext, 
             throw OperationError.invalidParameters("SendAppOperation.main: self.resignedAppBundle is nil")
         }
 
+        if resignedAppBundle.isWatchApp {
+            // A top-level watchOS bundle must never be staged or installed on the iPhone.
+            self.setProgress(100)
+            return resignedAppBundle
+        }
+
         let bundleIdentifier = self.context.targetBundleIdentifier
         let appURL = resignedAppBundle.fileURL
         verboseLog("[SendAppOperation] AFC App Bundle `fileURL`: \(appURL.absoluteString)")

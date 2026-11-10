@@ -32,7 +32,22 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
 
         let effectiveBundleId = self.context.targetBundleIdentifier
 
-        let appExtensions = targetAppBundle.appExtensions
+        let appExtensions = targetAppBundle.containsWatchContent ? Set(targetAppBundle.signingBundles.dropFirst()) : targetAppBundle.appExtensions
+        if targetAppBundle.containsWatchContent {
+            try WatchAppSupport.validateGraph(targetAppBundle)
+            guard !self.context.useMainProfile, self.context.overrideProvisioningProfile == nil else {
+                throw OperationError.invalidParameters("Watch bundles require individual watchOS profiles; Use Main Profile and a single profile override cannot be used.")
+            }
+            let expected = self.context.installedApp?.watchInstallation?["DeviceIdentifier"] as? String
+            let watch = try await WatchAppSupport.resolveDevice(expectedIdentifier: expected)
+            try WatchAppSupport.validateOS(targetAppBundle, device: watch)
+            self.context.watchDevice = watch
+            let team = try await AuthManager.shared.getAuthenticatedTeam()
+            let devices = try await DeveloperPortalProxy.shared.fetchDevices(for: team, types: .appleWatch)
+            if !devices.contains(where: { $0.identifier.caseInsensitiveCompare(watch.identifier) == .orderedSame }) {
+                _ = try await DeveloperPortalProxy.shared.registerDevice(name: watch.name, identifier: watch.identifier, type: .appleWatch, team: team)
+            }
+        }
 
         if let overrideProfile = self.context.overrideProvisioningProfile {
             self.debugLog("[FetchProvisioningProfiles] Using override provisioning profile '\(overrideProfile.name)' (\(overrideProfile.uuid)) for \(effectiveBundleId)")
@@ -67,6 +82,14 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         
         self.setProgress(50)
         self.debugLog("[FetchProvisioningProfiles] Preparing profiles for \(appExtensions.count) app extensions...")
+        if targetAppBundle.containsWatchContent {
+            for bundle in appExtensions.sorted(by: { $0.fileURL.path < $1.fileURL.path }) {
+                let key = bundle.bundleIdentifier.replacingOccurrences(of: targetAppBundle.bundleIdentifier, with: effectiveBundleId)
+                profiles[key] = try await self.provisionAndFetchProfile(for: bundle, parentAppBundle: targetAppBundle, team: team)
+            }
+            self.setProgress(100)
+            return profiles
+        }
         try await withThrowingTaskGroup(of: (String, ALTProvisioningProfile).self) { group in
             for appExtension in appExtensions {
                 group.addTask {
@@ -185,7 +208,14 @@ class FetchProvisioningProfilesOperation: BasePipelineOperation<InstallAppOperat
         
         verboseLog(targetAppBundle.dumpMachOInfo())
         self.debugLog("[FetchProvisioningProfiles] Fetching provisioning profile from Apple for App ID \(groupAppID.bundleIdentifier)...")
-        let profile = try await DeveloperPortalProxy.shared.downloadProvisioningProfile(for: groupAppID, deviceType: DeveloperPortalProxy.currentDeviceType, team: team)
+        let profile = try await DeveloperPortalProxy.shared.downloadProvisioningProfile(for: groupAppID, deviceType: targetAppBundle.isWatchApp ? .appleWatch : DeveloperPortalProxy.currentDeviceType, team: team)
+        if targetAppBundle.isWatchApp, let watch = self.context.watchDevice {
+            try WatchAppSupport.validate(profile, for: targetAppBundle, device: watch)
+        }
+        if self.context.targetAppBundle?.containsWatchContent == true, targetAppBundle.requiresWatchHealthKit,
+           profile.entitlements[ALTEntitlement.healthKit] as? Bool != true {
+            throw OperationError.invalidParameters("Apple did not grant required HealthKit access for '\(targetAppBundle.name)'.")
+        }
         self.debugLog("[FetchProvisioningProfiles] Provisioning profile fetched for \(groupAppID.bundleIdentifier) (Name: \(profile.name), Expiration: \(String(describing: profile.expirationDate)))")
         return profile
     }
@@ -198,7 +228,10 @@ private extension FetchProvisioningProfilesOperation{
                                name: String,
                                bundleIdentifier: String,
                                team: ALTTeam) async throws -> ALTAppID {
-        let appIDs = try await TaskChainCoalescer.shared.coalesce(key: "fetch_app_ids_\(team.identifier)") {
+        let appIDs = try await TaskChainCoalescer.shared.coalesce(key: "fetch_app_ids_\(team.identifier)_\(targetAppBundle.isWatchApp)") {
+            if targetAppBundle.isWatchApp {
+                return try await DeveloperPortalProxy.shared.fetchAppIDs(team: team, deviceType: .appleWatch)
+            }
             if let cachedAppIDs = self.context.sharedContext.appIDs {
                 self.debugLog("[FetchProvisioningProfiles] Using cached App IDs from shared context.")
                 return cachedAppIDs
@@ -223,7 +256,7 @@ private extension FetchProvisioningProfilesOperation{
             let appIDName = self.sanitizeAppIDName(name: name, bundleIdentifier: bundleIdentifier)
             
             self.debugLog("[FetchProvisioningProfiles] Calling DeveloperPortalProxy.shared.addAppID with name '\(appIDName)' and identifier '\(bundleIdentifier)'...")
-            let appID = try await DeveloperPortalProxy.shared.addAppID(name: appIDName, bundleIdentifier: bundleIdentifier, team: team)
+            let appID = try await DeveloperPortalProxy.shared.addAppID(name: appIDName, bundleIdentifier: bundleIdentifier, deviceType: targetAppBundle.isWatchApp ? .appleWatch : DeveloperPortalProxy.currentDeviceType, team: team)
             self.context.sharedContext.appendAppID(appID)
             self.debugLog("[FetchProvisioningProfiles] Successfully registered new App ID '\(appID.bundleIdentifier)' on Apple portal.")
             return appID
@@ -245,6 +278,11 @@ private extension FetchProvisioningProfilesOperation{
         var targetFeatures: [ALTFeature: String] = [:]
         var droppedFeatures: Set<ALTFeature> = []
         
+        if targetAppBundle.containsWatchContent || targetAppBundle.isWatchApp {
+            let groups = targetAppBundle.watchRuntimeAppGroups
+            if !groups.isEmpty { entitlements[ALTEntitlement.appGroups.rawValue] = groups }
+        }
+
         // Filter applicable features
         for (key, value) in entitlements {
             guard let feature = ALTFeature(entitlement: ALTEntitlement(rawValue: key)) else { 
@@ -259,6 +297,10 @@ private extension FetchProvisioningProfilesOperation{
             }
         }
         
+        if self.context.targetAppBundle?.containsWatchContent == true, targetAppBundle.requiresWatchHealthKit {
+            targetFeatures[ALTFeature("HK421J6T7P")] = "true"
+        }
+
         // Force apply mandatory features
         for feature in AppConstants.mandatoryFeatures {
             if allowedFeatures.contains(feature) {
@@ -290,7 +332,7 @@ private extension FetchProvisioningProfilesOperation{
         appID.features = targetFeatures
         
         do {
-            let updated = try await DeveloperPortalProxy.shared.updateAppID(appID, team: team)
+            let updated = try await DeveloperPortalProxy.shared.updateAppID(appID, deviceType: targetAppBundle.isWatchApp ? .appleWatch : DeveloperPortalProxy.currentDeviceType, team: team)
             self.verboseLog("[FetchProvisioningProfiles] Updated features for App ID \(updated.bundleIdentifier).")
             return updated
         } catch {
@@ -307,6 +349,12 @@ private extension FetchProvisioningProfilesOperation{
             entitlements[key] = value
         }
                 
+        if targetAppBundle.containsWatchContent || targetAppBundle.isWatchApp {
+            let groups = targetAppBundle.watchRuntimeAppGroups
+            if !groups.isEmpty {
+                entitlements[ALTEntitlement.appGroups.rawValue] = Array(Set((entitlements[ALTEntitlement.appGroups.rawValue] as? [String] ?? []) + groups))
+            }
+        }
         guard var applicationGroups = entitlements[ALTEntitlement.appGroups.rawValue] as? [String], !applicationGroups.isEmpty else {
             verboseLog("[FetchProvisioningProfiles] App ID \(appID.bundleIdentifier) has no app groups, skipping assignment.")
             // Assigning an App ID to an empty app group array fails,
@@ -356,7 +404,10 @@ private extension FetchProvisioningProfilesOperation{
         var seenGroupIDs = Set<String>()
         
         do {
-            let appGroups = try await TaskChainCoalescer.shared.coalesce(key: "fetch_app_groups_\(team.identifier)") {
+            let appGroups = try await TaskChainCoalescer.shared.coalesce(key: "fetch_app_groups_\(team.identifier)_\(targetAppBundle.isWatchApp)") {
+                if targetAppBundle.isWatchApp {
+                    return try await DeveloperPortalProxy.shared.fetchAppGroups(team: team, deviceType: .appleWatch)
+                }
                 if let cachedGroups = self.context.sharedContext.appGroups {
                     self.debugLog("[FetchProvisioningProfiles] Using cached App Groups from shared context.")
                     return cachedGroups
@@ -387,7 +438,7 @@ private extension FetchProvisioningProfilesOperation{
                             if let existing = self.context.sharedContext.appGroups?.first(where: { $0.groupIdentifier == adjustedGroupIdentifier }) {
                                 return existing
                             }
-                            let newGroup = try await DeveloperPortalProxy.shared.addAppGroup(name: name, groupIdentifier: adjustedGroupIdentifier, team: team)
+                            let newGroup = try await DeveloperPortalProxy.shared.addAppGroup(name: name, groupIdentifier: adjustedGroupIdentifier, deviceType: targetAppBundle.isWatchApp ? .appleWatch : DeveloperPortalProxy.currentDeviceType, team: team)
                             self.context.sharedContext.appendAppGroup(newGroup)
                             self.verboseLog("[FetchProvisioningProfiles] Created new App Group \(newGroup.groupIdentifier).")
                             return newGroup
@@ -400,7 +451,7 @@ private extension FetchProvisioningProfilesOperation{
                 groups.append(group)
             }
             
-            try await DeveloperPortalProxy.shared.assignAppID(appID, to: Array(groups), team: team)
+            try await DeveloperPortalProxy.shared.assignAppID(appID, to: Array(groups), deviceType: targetAppBundle.isWatchApp ? .appleWatch : DeveloperPortalProxy.currentDeviceType, team: team)
             let groupIDs = groups.map { $0.groupIdentifier }
             self.debugLog("[FetchProvisioningProfiles] Assigned App ID \(appID.bundleIdentifier) to App Groups \(groupIDs.description).")
             
@@ -448,6 +499,9 @@ private extension FetchProvisioningProfilesOperation{
             }
         }
 
+        if self.context.targetAppBundle?.containsWatchContent == true, groupIdentifier.hasSuffix("." + team.identifier) {
+            return groupIdentifier
+        }
         return groupIdentifier + "." + team.identifier
     }
 }

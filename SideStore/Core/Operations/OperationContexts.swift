@@ -8,6 +8,8 @@
 
 
 import Foundation
+import Minimuxer
+import DeviceGatewayAPI
 import CoreData
 import Network
 import SideSign
@@ -272,6 +274,7 @@ class InstallAppOperationContext: PipelineOperationContext
     var isStoreUpdate: Bool = false
     var targetAppBundle: ALTApplication?
 
+    var watchDevice: PairedWatchDevice?
     var provisioningProfiles: [String: ALTProvisioningProfile]?
     var appexBundleIds: [String: String]?
     var useMainProfile = false

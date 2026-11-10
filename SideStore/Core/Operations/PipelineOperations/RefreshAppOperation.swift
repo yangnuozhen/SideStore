@@ -28,6 +28,9 @@ final class RefreshAppOperation: BasePipelineOperation<InstallAppOperationContex
         guard let appBundle = self.context.targetAppBundle else {
             throw OperationError.invalidParameters("RefreshAppOperation: context.targetAppBundle is nil")
         }
+        guard !appBundle.containsWatchContent, self.context.installedApp?.containsWatchContent != true else {
+            throw OperationError.invalidParameters("Watch apps must be refreshed through the signing and Watch installation pipeline.")
+        }
         self.setProgress(10)
         
         if self.context.isCellularRefreshGroup {

@@ -93,6 +93,8 @@ final class AppManager: ObservableObject, @unchecked Sendable
 
                     guard app.isActive, !self.isActivelyManagingApp(withBundleID: app.bundleIdentifier) else { continue }
 
+                    // Watch-only apps do not register UTIs in iOS LaunchServices.
+                    if app.isWatchOnlyApp { continue }
                     let isDeclared = UTType(app.installedAppUTI)?.isDeclared ?? false
                     guard !isDeclared, !legacyApps.contains(app.bundleIdentifier) else { continue }
 

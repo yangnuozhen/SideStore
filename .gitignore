@@ -104,3 +104,7 @@ tmp
 
 scratch*.sh
 *.sh
+# Personal Watch support documentation and local validation tools
+!docs/WATCH_SUPPORT.md
+/.watch-validation/
+/scripts/**/__pycache__/

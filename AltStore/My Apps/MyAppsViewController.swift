@@ -1134,6 +1134,12 @@ private extension MyAppsViewController
 {
     func open(_ installedApp: InstalledApp)
     {
+        if installedApp.isWatchOnlyApp {
+            let alert = UIAlertController(title: "Apple Watch App", message: "Open this app on your Apple Watch. Use Refresh here to renew its signature.", preferredStyle: .alert)
+            alert.addAction(UIAlertAction(title: "OK", style: .default))
+            self.present(alert, animated: true)
+            return
+        }
         UIApplication.shared.open(installedApp.openAppURL) { success in
             guard !success else { return }
             
@@ -2308,6 +2314,13 @@ extension MyAppsViewController
             #endif
         }
         
+        if installedApp.containsWatchContent {
+            actions.removeAll { [backupMenu, deactivateAction, activateAction].contains($0) }
+            if installedApp.isWatchOnlyApp {
+                actions.removeAll { [openMenu, jitAction, profileMenu, changeIconMenu].contains($0) }
+                if !actions.contains(removeAction) { actions.append(removeAction) }
+            }
+        }
         actions.append(infoAction)
         
         // Change the order of entries to make changes to how the context menu is displayed

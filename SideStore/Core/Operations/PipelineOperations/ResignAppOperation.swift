@@ -105,19 +105,25 @@ final class ResignAppOperation: BasePipelineOperation<InstallAppOperationContext
             }
         }
         
+        var relationshipIDs: [String: String] = [:]
+        for bundle in appBundle.signingBundles {
+            let key = bundle.bundleIdentifier.replacingOccurrences(of: targetAppBundle.bundleIdentifier, with: bundleIdentifier)
+            if let profile = profiles[key] { relationshipIDs[bundle.bundleIdentifier] = appexBundleIds[key] ?? profile.bundleIdentifier }
+        }
+
         // Prepare app
-        try self.prepare(appBundle, bundleID: bundleIdentifier, additionalInfoDictionaryValues: additionalValues, profiles: profiles, appexBundleIds: appexBundleIds)
+        try self.prepare(appBundle, bundleID: bundleIdentifier, additionalInfoDictionaryValues: additionalValues, profiles: profiles, appexBundleIds: appexBundleIds, relationshipIDs: relationshipIDs)
         try self.removeMissingAppExtensionReferences(from: appBundle)
         
-        for appExtension in appBundle.appExtensions {
+        for appExtension in appBundle.signingBundles.dropFirst() {
             let updatedAppExBundleId = appExtension.bundleIdentifier.replacingOccurrences(of: targetAppBundle.bundleIdentifier, with: bundleIdentifier)
-            try self.prepare(appExtension, bundleID: updatedAppExBundleId, profiles: profiles, appexBundleIds: appexBundleIds)
+            try self.prepare(appExtension, bundleID: updatedAppExBundleId, profiles: profiles, appexBundleIds: appexBundleIds, relationshipIDs: relationshipIDs)
         }
         
         return appBundleURL
     }
     
-    private func prepare(_ appBundle: ALTApplication, bundleID identifier: String?, additionalInfoDictionaryValues: [String: Any] = [:], profiles: [String: ALTProvisioningProfile], appexBundleIds: [String: String]) throws {
+    private func prepare(_ appBundle: ALTApplication, bundleID identifier: String?, additionalInfoDictionaryValues: [String: Any] = [:], profiles: [String: ALTProvisioningProfile], appexBundleIds: [String: String], relationshipIDs: [String: String]) throws {
         guard let identifier else {
             throw OperationError.invalidParameters("Bundle is missing bundle identifier.")
         }
@@ -156,6 +162,24 @@ final class ResignAppOperation: BasePipelineOperation<InstallAppOperationContext
             }
         }
 
+        if self.context.targetAppBundle?.containsWatchContent == true {
+            func mapped(_ identifier: String) throws -> String {
+                if let result = relationshipIDs[identifier] { return result }
+                if relationshipIDs.values.contains(identifier) { return identifier }
+                throw OperationError.invalidApp(reason: "Watch relationship references a bundle outside this app: '\(identifier)'.")
+            }
+            if let companion = infoDictionary["WKCompanionAppBundleIdentifier"] as? String {
+                infoDictionary["WKCompanionAppBundleIdentifier"] = try mapped(companion)
+            }
+            if var extensionInfo = infoDictionary["NSExtension"] as? [String: Any],
+               var attributes = extensionInfo["NSExtensionAttributes"] as? [String: Any],
+               let watchID = attributes["WKAppBundleIdentifier"] as? String {
+                attributes["WKAppBundleIdentifier"] = try mapped(watchID)
+                extensionInfo["NSExtensionAttributes"] = attributes
+                infoDictionary["NSExtension"] = extensionInfo
+            }
+        }
+
         if let appGroups = profile.entitlements[.appGroups] as? [String] {
             // To keep file providers working, remap the NSExtensionFileProviderDocumentGroup, if there is one.
             if var extensionInfo = infoDictionary["NSExtension"] as? [String: Any],
@@ -166,6 +190,17 @@ final class ResignAppOperation: BasePipelineOperation<InstallAppOperationContext
             }
         }
         
+        if appBundle.isWatchApp || appBundle.containsWatchContent {
+            let groups = profile.entitlements[.appGroups] as? [String] ?? []
+            if let original = infoDictionary["WatchRegionAppGroup"] as? String {
+                guard let mapped = groups.first(where: { $0 == original || $0 == original + "." + profile.teamIdentifier }) else {
+                    throw OperationError.invalidParameters("The signing profile does not authorize WatchRegionAppGroup.")
+                }
+                infoDictionary["WatchRegionAppGroup"] = mapped
+            }
+            if infoDictionary["ALTAppGroups"] != nil { infoDictionary["ALTAppGroups"] = groups }
+        }
+
         // Add app-specific exported UTI so we can check later if this app (extension) is installed or not.
         let installedAppUTI = ["UTTypeConformsTo": [],
                                "UTTypeDescription": "AltStore Installed App",

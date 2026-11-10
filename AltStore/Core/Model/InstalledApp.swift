@@ -245,6 +245,10 @@ public class InstalledApp: BaseEntity, InstalledAppProtocol
     }
     
     public var requiredActiveSlots: Int {
+        if let bundle = ALTApplication(fileURL: self.fileURL), bundle.containsWatchContent {
+            if bundle.isWatchApp { return 0 }
+            return UserDefaults.standard.activeAppLimitIncludesExtensions ? 1 + bundle.appExtensions.count : 1
+        }
         let requiredActiveSlots = UserDefaults.standard.activeAppLimitIncludesExtensions ? self.appIDCount : 1
         return requiredActiveSlots
     }

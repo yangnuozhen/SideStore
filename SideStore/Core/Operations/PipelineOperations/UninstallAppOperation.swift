@@ -39,7 +39,16 @@ final class UninstallAppOperation: BasePipelineOperation<InstallAppOperationCont
         // send uninstall payload to device
         do {
             await CellularRefreshManager.shared.turnOffDataIfNeeded()
-            try await removeApp(resignedBundleIdentifier)
+            if installedApp.containsWatchContent {
+                let expected = installedApp.watchInstallation?["DeviceIdentifier"] as? String
+                let watch = try await WatchAppSupport.resolveDevice(expectedIdentifier: expected)
+                let ids = installedApp.watchInstallation?["BundleIdentifiers"] as? [String] ?? []
+                guard !ids.isEmpty else { throw OperationError.invalidParameters("Missing Watch installation metadata.") }
+                for id in ids {
+                    try await minimuxer.gateway.removeWatchApp(bundleIdentifier: id, device: watch, pairingData: WatchAppSupport.pairingData())
+                }
+            }
+            if !installedApp.isWatchOnlyApp { try await removeApp(resignedBundleIdentifier) }
             await CellularRefreshManager.shared.turnOnDataIfNeeded()
         } catch {
             await CellularRefreshManager.shared.turnOnDataIfNeeded()

@@ -65,7 +65,7 @@ final class VerifyAppOperation: BasePipelineOperation<InstallAppOperationContext
         }
         
         // 2. iOS Version Compatibility Check
-        if UserDefaults.standard.isiOSVersionVerificationEnabled {
+        if UserDefaults.standard.isiOSVersionVerificationEnabled && !appBundle.isWatchApp {
             guard ProcessInfo.processInfo.isOperatingSystemAtLeast(appBundle.minimumiOSVersion) else {
                 throw VerificationError.iOSVersionNotSupported(app: appBundle, requiredOSVersion: appBundle.minimumiOSVersion)
             }

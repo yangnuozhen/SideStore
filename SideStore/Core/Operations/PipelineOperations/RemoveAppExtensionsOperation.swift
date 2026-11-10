@@ -68,6 +68,15 @@ final class RemoveAppExtensionsOperation: BasePipelineOperation<InstallAppOperat
             throw OperationError.invalidParameters("RemoveAppExtensionsOperation: context.appBundle is nil")
         }
         
+        if targetAppBundle.containsWatchContent {
+            guard !self.context.useMainProfile else {
+                throw OperationError.invalidParameters("Watch apps require separate provisioning profiles.")
+            }
+            // Preserve the complete Watch graph; iPhone extension-removal presets must not break it.
+            self.setProgress(100)
+            return targetAppBundle
+        }
+
         // target App Bundle doesn't contain extensions so don't bother
         guard !targetAppBundle.appExtensions.isEmpty else {
             self.setProgress(100)

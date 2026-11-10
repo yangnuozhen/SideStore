@@ -1,0 +1,323 @@
+diff --git a/Sources/CodeSigning/CodeSignerAPI.swift b/Sources/CodeSigning/CodeSignerAPI.swift
+index c43fd90..22d69ac 100644
+--- a/Sources/CodeSigning/CodeSignerAPI.swift
++++ b/Sources/CodeSigning/CodeSignerAPI.swift
+@@ -78,7 +78,7 @@ public struct AppBundleSigner: CodeSignerAPI, Sendable {
+             for p in profiles where p.bundleIdentifier == app.bundleIdentifier {
+                 return p
+             }
+-            return profiles.first
++            return appBundle.containsWatchContent ? nil : profiles.first
+         }
+ 
+         var entitlementsByURL: [URL: String] = [:]
+@@ -95,7 +95,23 @@ public struct AppBundleSigner: CodeSignerAPI, Sendable {
+             var filteredEntitlements = matchedProfile.entitlements
+             verboseLog("[SideSign] Original profile entitlements: \(filteredEntitlements)")
+ 
+-            let applicationEntitlements = app.entitlements
++            var applicationEntitlements = app.entitlements
++            if appBundle.containsWatchContent {
++                if app.infoPlist["NSHealthShareUsageDescription"] != nil || app.infoPlist["NSHealthUpdateUsageDescription"] != nil {
++                    guard matchedProfile.entitlements["com.apple.developer.healthkit"] as? Bool == true else {
++                        throw SignerError.invalidApp(cause: "Profile does not authorize required HealthKit access.")
++                    }
++                    applicationEntitlements["com.apple.developer.healthkit"] = true
++                }
++                let declaredGroups = (app.infoPlist["ALTAppGroups"] as? [String] ?? []) + ((app.infoPlist["WatchRegionAppGroup"] as? String).map { [$0] } ?? [])
++                if !declaredGroups.isEmpty {
++                    let authorizedGroups = matchedProfile.entitlements["com.apple.security.application-groups"] as? [String] ?? []
++                    guard declaredGroups.allSatisfy({ group in authorizedGroups.contains(group) || authorizedGroups.contains(group + "." + matchedProfile.teamIdentifier) }) else {
++                        throw SignerError.invalidApp(cause: "Profile does not authorize the declared runtime App Groups.")
++                    }
++                    applicationEntitlements["com.apple.security.application-groups"] = authorizedGroups
++                }
++            }
+ 
+             for (key, _) in filteredEntitlements {
+                 if let applicationValue = applicationEntitlements[key] {
+@@ -146,7 +162,7 @@ public struct AppBundleSigner: CodeSignerAPI, Sendable {
+         do {
+             try prepare(appBundle)
+ 
+-            for ext in appBundle.appExtensions {
++            for ext in appBundle.signingBundles.dropFirst() {
+                 verboseLog("[SideSign] Found app extension: \(ext.bundleIdentifier) at \(ext.fileURL.path)")
+                 try prepare(ext)
+             }
+@@ -174,12 +190,14 @@ public struct AppBundleSigner: CodeSignerAPI, Sendable {
+                         if resolved == appResolved {
+                             targetType = .mainAppBundleDirectory
+                             xml = entitlementsByURL[appResolved] ?? ""
+-                        } else if let matchedExt = appBundle.appExtensions.first(where: { ext in
++                        } else if let matchedExt = appBundle.signingBundles.dropFirst().sorted(by: { $0.fileURL.path.count > $1.fileURL.path.count }).first(where: { ext in
+                             let extResolved = ext.fileURL.resolvingSymlinksInPath()
+                             return resolved == extResolved ||
+-                                   resolved.path.hasPrefix(extResolved.path + "/") ||
+-                                   resolved.lastPathComponent == extResolved.lastPathComponent ||
+-                                   resolved.deletingPathExtension().lastPathComponent == extResolved.deletingPathExtension().lastPathComponent
++                                   resolved == ext.executableURL?.resolvingSymlinksInPath() ||
++                                   (!appBundle.containsWatchContent &&
++                                    (resolved.path.hasPrefix(extResolved.path + "/") ||
++                                     resolved.lastPathComponent == extResolved.lastPathComponent ||
++                                     resolved.deletingPathExtension().lastPathComponent == extResolved.deletingPathExtension().lastPathComponent))
+                         }) {
+                             let extResolved = matchedExt.fileURL.resolvingSymlinksInPath()
+                             if resolved == extResolved {
+diff --git a/Sources/DeveloperPortal/AppGroups.swift b/Sources/DeveloperPortal/AppGroups.swift
+index 7bfbae0..d2901c3 100644
+--- a/Sources/DeveloperPortal/AppGroups.swift
++++ b/Sources/DeveloperPortal/AppGroups.swift
+@@ -10,11 +10,12 @@ import Foundation
+ 
+ public extension DeveloperPortal {
+ 
+-    func fetchAppGroups(for team: Team, session: Session) async throws -> [AppGroup] {
++    func fetchAppGroups(for team: Team, deviceType: DeviceType = .iPhone, session: Session) async throws -> [AppGroup] {
+         debugLog("[SideSign] fetchAppGroups starting...")
+         verboseLog("[SideSign] Team: \(team.name)")
+ 
+-        let response: ListAppGroupsResponse = try await sendRequest(url: Constants.URLs.listApplicationGroups, session: session, team: team)
++        let parameters: [String: any Sendable] = deviceType.contains(.appleWatch) ? ["DTDK_Platform": "watchos"] : [:]
++        let response: ListAppGroupsResponse = try await sendRequest(url: Constants.URLs.listApplicationGroups, additionalParameters: parameters, session: session, team: team)
+ 
+         let appGroups = response.applicationGroupList ?? []
+ 
+@@ -28,15 +29,17 @@ public extension DeveloperPortal {
+         return appGroups
+     }
+ 
+-    func addAppGroup(name: String, groupIdentifier: String, team: Team, session: Session) async throws -> AppGroup {
++    func addAppGroup(name: String, groupIdentifier: String, deviceType: DeviceType = .iPhone, team: Team, session: Session) async throws -> AppGroup {
+         debugLog("[SideSign] addAppGroup starting...")
+         verboseLog("[SideSign] Name: '\(name)', GroupID: '\(groupIdentifier)', Team: \(team.name)")
+ 
+-        let parameters = [
++        var parameters = [
+             "name": name,
+             "identifier": groupIdentifier
+         ]
+ 
++        if deviceType.contains(.appleWatch) { parameters["DTDK_Platform"] = "watchos" }
++
+         let response: AppGroupResponse = try await sendRequest(url: Constants.URLs.addApplicationGroup, additionalParameters: parameters, session: session, team: team)
+ 
+         guard let createdGroup = response.applicationGroup else {
+@@ -70,16 +73,18 @@ public extension DeveloperPortal {
+         return updated
+     }
+ 
+-    func assignAppGroups(_ appGroups: [AppGroup], to appID: AppID, team: Team, session: Session) async throws -> AppID {
++    func assignAppGroups(_ appGroups: [AppGroup], to appID: AppID, deviceType: DeviceType = .iPhone, team: Team, session: Session) async throws -> AppID {
+         debugLog("[SideSign] assignAppGroups starting...")
+         verboseLog("[SideSign] AppID: \(appID.bundleIdentifier), AppGroups: \(appGroups.map { $0.identifier }), Team: \(team.name)")
+ 
+         let groupIDs = appGroups.map { $0.groupID }
+-        let parameters: [String: any Sendable] = [
++        var parameters: [String: any Sendable] = [
+             "appIdId": appID.identifier,
+             "applicationGroups": groupIDs
+         ]
+ 
++        if deviceType.contains(.appleWatch) { parameters["DTDK_Platform"] = "watchos" }
++
+         let response: AppIDResponse = try await sendRequest(
+             url: Constants.URLs.assignApplicationGroup,
+             additionalParameters: parameters,
+diff --git a/Sources/DeveloperPortal/AppIDs.swift b/Sources/DeveloperPortal/AppIDs.swift
+index efb5c44..159f59c 100644
+--- a/Sources/DeveloperPortal/AppIDs.swift
++++ b/Sources/DeveloperPortal/AppIDs.swift
+@@ -3,18 +3,19 @@
+ //  SideSign
+ //
+ //  Created by Magesh K on 30/08/26.
+-//  Copyright © 2026 SideSign. All rights reserved.
++//  Copyright 漏 2026 SideSign. All rights reserved.
+ //
+ 
+ import Foundation
+ 
+ public extension DeveloperPortal {
+ 
+-    func fetchAppIDs(for team: Team, session: Session) async throws -> [AppID] {
++    func fetchAppIDs(for team: Team, deviceType: DeviceType = .iPhone, session: Session) async throws -> [AppID] {
+         debugLog("[SideSign] fetchAppIDs starting...")
+         verboseLog("[SideSign] Team: \(team.name)")
+ 
+-        let response: ListAppIDsResponse = try await sendRequest(url: Constants.URLs.listAppIDs, session: session, team: team)
++        let parameters: [String: any Sendable] = deviceType.contains(.appleWatch) ? ["DTDK_Platform": "watchos"] : [:]
++        let response: ListAppIDsResponse = try await sendRequest(url: Constants.URLs.listAppIDs, additionalParameters: parameters, session: session, team: team)
+ 
+         let appIDs = response.appIds ?? []
+ 
+@@ -28,15 +29,17 @@ public extension DeveloperPortal {
+         return appIDs
+     }
+ 
+-    func addAppID(withName name: String, bundleIdentifier: String, team: Team, session: Session) async throws -> AppID {
++    func addAppID(withName name: String, bundleIdentifier: String, deviceType: DeviceType = .iPhone, team: Team, session: Session) async throws -> AppID {
+         debugLog("[SideSign] addAppID starting...")
+         verboseLog("[SideSign] Name: '\(name)', BundleID: '\(bundleIdentifier)', Team: \(team.name)")
+ 
+-        let parameters = [
++        var parameters = [
+             "name": name,
+             "identifier": bundleIdentifier
+         ]
+ 
++        if deviceType.contains(.appleWatch) { parameters["DTDK_Platform"] = "watchos" }
++
+         let response: AppIDResponse = try await sendRequest(
+             url: Constants.URLs.addAppID,
+             additionalParameters: parameters,
+@@ -65,7 +68,7 @@ public extension DeveloperPortal {
+         return createdAppID
+     }
+ 
+-    func updateAppID(_ appID: AppID, team: Team, session: Session) async throws -> AppID {
++    func updateAppID(_ appID: AppID, deviceType: DeviceType = .iPhone, team: Team, session: Session) async throws -> AppID {
+         debugLog("[SideSign] updateAppID starting...")
+         verboseLog("[SideSign] AppID: \(appID.bundleIdentifier), Team: \(team.name)")
+ 
+@@ -73,6 +76,8 @@ public extension DeveloperPortal {
+             "appIdId": appID.identifier
+         ]
+ 
++        if deviceType.contains(.appleWatch) { parameters["DTDK_Platform"] = "watchos" }
++
+         for (feature, value) in appID.features {
+             let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+             if trimmed.lowercased() == "true" {
+diff --git a/Sources/DeveloperPortal/Devices.swift b/Sources/DeveloperPortal/Devices.swift
+index 98b0659..08f74fc 100644
+--- a/Sources/DeveloperPortal/Devices.swift
++++ b/Sources/DeveloperPortal/Devices.swift
+@@ -14,7 +14,8 @@ public extension DeveloperPortal {
+         debugLog("[SideSign] fetchDevices starting...")
+         verboseLog("[SideSign] Team: \(team.name) (\(team.identifier))")
+ 
+-        let response: ListDevicesResponse = try await sendRequest(url: Constants.URLs.listDevices, session: session, team: team)
++        let parameters: [String: any Sendable] = types == .appleWatch ? ["DTDK_Platform": "watchos"] : [:]
++        let response: ListDevicesResponse = try await sendRequest(url: Constants.URLs.listDevices, additionalParameters: parameters, session: session, team: team)
+ 
+         let devices = (response.devices ?? []).filter { types.contains($0.type) }
+ 
+@@ -44,6 +45,8 @@ public extension DeveloperPortal {
+ 
+         if type.contains(.iPhone) || type.contains(.iPad) {
+             parameters["DTDK_Platform"] = "ios"
++        } else if type.contains(.appleWatch) {
++            parameters["DTDK_Platform"] = "watchos"
+         } else if type.contains(.appleTV) {
+             parameters["DTDK_Platform"] = "tvos"
+             parameters["subPlatform"] = "tvOS"
+diff --git a/Sources/DeveloperPortal/Profiles.swift b/Sources/DeveloperPortal/Profiles.swift
+index 6c68dab..2d3f740 100644
+--- a/Sources/DeveloperPortal/Profiles.swift
++++ b/Sources/DeveloperPortal/Profiles.swift
+@@ -203,6 +203,8 @@ public extension DeveloperPortal {
+         var parameters = ["appIdId": appID.identifier]
+         if let subPlatform = subPlatform {
+             parameters["subPlatform"] = subPlatform
++        } else if deviceType.contains(.appleWatch) {
++            parameters["DTDK_Platform"] = "watchos"
+         } else if deviceType.contains(.appleTV) {
+             parameters["subPlatform"] = "tvOS"
+         } else if deviceType.contains(.mac) {
+diff --git a/Sources/Models/AppBundle.swift b/Sources/Models/AppBundle.swift
+index acf0c02..924f43c 100644
+--- a/Sources/Models/AppBundle.swift
++++ b/Sources/Models/AppBundle.swift
+@@ -34,6 +34,40 @@ public struct AppBundle: Sendable, Identifiable, Hashable, Equatable {
+         loadExtensions()
+     }
+ 
++    public var isWatchApp: Bool {
++        if isExtension,
++           let parent = AppBundle(fileURL: fileURL.deletingLastPathComponent().deletingLastPathComponent()), parent.isWatchApp { return true }
++        return (infoPlist["DTPlatformName"] as? String)?.lowercased() == "watchos" ||
++        (infoPlist["CFBundleSupportedPlatforms"] as? [String])?.contains(where: { $0.lowercased() == "watchos" }) == true ||
++        (infoPlist["UIDeviceFamily"] as? [Int])?.contains(4) == true ||
++        infoPlist["WKWatchKitApp"] as? Bool == true || infoPlist["WKApplication"] as? Bool == true || infoPlist["WKWatchOnly"] as? Bool == true
++    }
++
++    public var watchAppBundles: [AppBundle] {
++        if isWatchApp && !isExtension { return [self] }
++        let directory = fileURL.appendingPathComponent("Watch", isDirectory: true)
++        let urls = (try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isSymbolicLinkKey])) ?? []
++        return urls.filter { $0.pathExtension == "app" && (try? $0.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true }.sorted { $0.path < $1.path }.compactMap { AppBundle(fileURL: $0) }
++    }
++
++    public var containsWatchContent: Bool {
++        if isWatchApp { return true }
++        let urls = (try? FileManager.default.contentsOfDirectory(at: fileURL.appendingPathComponent("Watch"), includingPropertiesForKeys: nil)) ?? []
++        return urls.contains { $0.pathExtension == "app" }
++    }
++
++    /// App-ID-bearing bundles in parent-first order. Frameworks are code, not provisioning targets.
++    public var signingBundles: [AppBundle] {
++        var result = [self]
++        for child in appExtensions.sorted(by: { $0.fileURL.path < $1.fileURL.path }) {
++            result += child.signingBundles
++        }
++        if !isWatchApp {
++            for watch in watchAppBundles { result += watch.signingBundles }
++        }
++        return result
++    }
++
+     public var isExtension: Bool {
+         fileURL.pathExtension.lowercased() == "appex"
+     }
+@@ -126,7 +160,7 @@ public struct AppBundle: Sendable, Identifiable, Hashable, Equatable {
+             return []
+         }
+         let extensions = contents
+-            .filter { $0.pathExtension.lowercased() == "appex" }
++            .filter { $0.pathExtension.lowercased() == "appex" && (try? $0.resourceValues(forKeys: [.isSymbolicLinkKey]).isSymbolicLink) != true }
+             .compactMap { AppBundle(fileURL: $0) }
+         return Set(extensions)
+     }
+@@ -211,14 +245,14 @@ public extension AppBundle {
+ 
+     var allEntitlements: [String: [String: any Sendable]] {
+         var map: [String: [String: any Sendable]] = [bundleIdentifier: entitlements]
+-        for ext in appExtensions {
++        for ext in signingBundles.dropFirst() {
+             map[ext.bundleIdentifier] = ext.entitlements
+         }
+         return map
+     }
+ 
+     var allAppBundles: [AppBundle] {
+-        [self] + Array(appExtensions).sorted { $0.bundleIdentifier.localizedCaseInsensitiveCompare($1.bundleIdentifier) == .orderedAscending }
++        signingBundles
+     }
+ 
+     func appExtension(withBundleIdentifier id: String) -> AppBundle? {
+@@ -229,7 +263,7 @@ public extension AppBundle {
+         if bundleIdentifier == id {
+             return self
+         }
+-        return appExtension(withBundleIdentifier: id)
++        return signingBundles.first { $0.bundleIdentifier == id }
+     }
+ 
+     func entitlements(for bundleIdentifier: String) -> [String: any Sendable]? {
+diff --git a/Sources/Models/ProvisioningProfile.swift b/Sources/Models/ProvisioningProfile.swift
+index cc2118a..3c1ca8d 100644
+--- a/Sources/Models/ProvisioningProfile.swift
++++ b/Sources/Models/ProvisioningProfile.swift
+@@ -32,6 +32,11 @@ public struct ProvisioningProfile: Sendable, Codable, Equatable, Hashable, Ident
+         return ents
+     }
+ 
++    public var platforms: [String] {
++        guard let dict = try? Self.dictionary(fromEncodedData: data) else { return [] }
++        return dict["Platform"] as? [String] ?? []
++    }
++
+     public var certificates: [X509Certificate] {
+         guard let dict = try? Self.dictionary(fromEncodedData: data),
+               let certDatas = dict["DeveloperCertificates"] as? [Data] else 

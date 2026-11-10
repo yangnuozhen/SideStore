@@ -1,0 +1,154 @@
+name: Personal Watch Support Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: watch-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: xcode-27
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: maxim-lobanov/setup-xcode@v1.6.0
+        with:
+          xcode-version: '27.2'
+
+      - name: Prepare pinned Watch dependencies
+        run: python3 scripts/watch-support/prepare.py
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          swift --version
+
+      - name: Check Watch archive and bundle graph fixtures
+        run: python3 scripts/watch-support/verify.py --require-swift
+
+      - name: Test combined IPA packaging
+        run: python3 -m unittest discover -s scripts/livecontainer -p 'test_*.py' -v
+
+      - name: Install packaging tools
+        run: brew install ldid
+
+      - name: Build and package
+        run: |
+          set -o pipefail
+          make build fakesign ipa BUILD_CONFIG=Release 2>&1 | tee watch-build.log
+
+      - name: Attest this Watch SideStore build
+        run: |
+          mkdir -p build/watch-artifacts
+          cp SideStore.ipa build/watch-artifacts/SideStore.ipa
+          python3 scripts/livecontainer/package.py attest \
+            --sidestore-ipa build/watch-artifacts/SideStore.ipa \
+            --output build/watch-artifacts/SideStore-Watch-build.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SideStore-Watch-Experimental
+          path: build/watch-artifacts/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Watch-build-logs
+          path: watch-build.log
+          if-no-files-found: ignore
+
+  livecontainer:
+    name: Embed Watch SideStore in LiveContainer
+    needs: build
+    runs-on: xcode-27
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: maxim-lobanov/setup-xcode@v1.6.0
+        with:
+          xcode-version: '27.2'
+
+      - name: Read pinned upstream revisions
+        id: refs
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          config = json.loads(Path("scripts/livecontainer/build-config.json").read_text())
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              for key, value in config.items():
+                  print(f"{key}={value}", file=output)
+          PY
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.refs.outputs.livecontainer_repository }}
+          ref: ${{ steps.refs.outputs.livecontainer_revision }}
+          path: build/livecontainer-source
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: actions/checkout@v4
+        with:
+          repository: ${{ steps.refs.outputs.dylibify_repository }}
+          ref: ${{ steps.refs.outputs.dylibify_revision }}
+          path: build/dylibify-source
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: SideStore-Watch-Experimental
+          path: build/watch-input
+
+      - name: Build packaging tools from pinned source
+        run: |
+          brew install ldid
+          xcrun clang build/dylibify-source/main.m -framework Foundation \
+            -fobjc-arc -o "$GITHUB_WORKSPACE/build/dylibify"
+
+      - name: Build LiveContainer and SideStoreSupport
+        working-directory: build/livecontainer-source
+        run: |
+          set -o pipefail
+          xcodebuild archive -project LiveContainer.xcodeproj \
+            -scheme LiveContainer -sdk iphoneos -arch arm64 -configuration Release \
+            -archivePath "$GITHUB_WORKSPACE/build/LiveContainer.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            AD_HOC_CODE_SIGNING_ALLOWED=YES DEVELOPMENT_TEAM=XYZ0123456 \
+            2>&1 | tee "$GITHUB_WORKSPACE/build/livecontainer-build.log"
+
+      - name: Package LiveContainer with this Watch SideStore
+        run: |
+          python3 scripts/livecontainer/package.py package \
+            --livecontainer-source build/livecontainer-source \
+            --dylibify-source build/dylibify-source \
+            --archive build/LiveContainer.xcarchive \
+            --sidestore-ipa build/watch-input/SideStore.ipa \
+            --provenance build/watch-input/SideStore-Watch-build.json \
+            --dylibify "$GITHUB_WORKSPACE/build/dylibify" \
+            --output "build/combined/LiveContainer+SideStore.ipa"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: LiveContainer+SideStore-Watch-Experimental
+          path: build/combined/
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: LiveContainer-build-logs
+          path: build/livecontainer-build.log
+          if-no-files-found: ignore

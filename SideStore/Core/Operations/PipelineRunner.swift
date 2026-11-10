@@ -312,6 +312,13 @@ final class PipelineRunner: Sendable
     
     private func performPipeline(for operation: AppOperation, handler: PipelineExecutionHandler, group: RefreshGroup, operationsCount: Int = 1) async throws -> InstalledApp
     {
+        if let app = operation.app as? InstalledApp, app.containsWatchContent {
+            switch operation {
+            case .backup, .restore, .activate, .deactivate:
+                throw OperationError.invalidParameters("Watch app backup and deactivation are not supported. Use Refresh, Re-sign, or Delete App.")
+            default: break
+            }
+        }
         let pipelineSteps = PipelineStepDefinition.steps(for: operation)
         let context = InstallAppOperationContext(
             pipelineSteps: pipelineSteps,
