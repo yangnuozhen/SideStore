@@ -189,6 +189,36 @@ index efb5c44..159f59c 100644
          for (feature, value) in appID.features {
              let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
              if trimmed.lowercased() == "true" {
+diff --git a/Sources/DeveloperPortal/DeveloperPortalAPI.swift b/Sources/DeveloperPortal/DeveloperPortalAPI.swift
+index dfea7cc..0747108 100644
+--- a/Sources/DeveloperPortal/DeveloperPortalAPI.swift
++++ b/Sources/DeveloperPortal/DeveloperPortalAPI.swift
+@@ -509,3 +509,25 @@ public final class DeveloperPortal: DeveloperPortalAPI, Sendable {
+         }
+     }
+ }
++
++// Preserve the original protocol witnesses while platform-aware overloads serve Watch targets.
++public extension DeveloperPortal {
++    func fetchAppIDs(for team: Team, session: Session) async throws -> [AppID] {
++        try await fetchAppIDs(for: team, deviceType: .iPhone, session: session)
++    }
++    func addAppID(withName name: String, bundleIdentifier: String, team: Team, session: Session) async throws -> AppID {
++        try await addAppID(withName: name, bundleIdentifier: bundleIdentifier, deviceType: .iPhone, team: team, session: session)
++    }
++    func updateAppID(_ appID: AppID, team: Team, session: Session) async throws -> AppID {
++        try await updateAppID(appID, deviceType: .iPhone, team: team, session: session)
++    }
++    func fetchAppGroups(for team: Team, session: Session) async throws -> [AppGroup] {
++        try await fetchAppGroups(for: team, deviceType: .iPhone, session: session)
++    }
++    func addAppGroup(name: String, groupIdentifier: String, team: Team, session: Session) async throws -> AppGroup {
++        try await addAppGroup(name: name, groupIdentifier: groupIdentifier, deviceType: .iPhone, team: team, session: session)
++    }
++    func assignAppGroups(_ appGroups: [AppGroup], to appID: AppID, team: Team, session: Session) async throws -> AppID {
++        try await assignAppGroups(appGroups, to: appID, deviceType: .iPhone, team: team, session: session)
++    }
++}
 diff --git a/Sources/DeveloperPortal/Devices.swift b/Sources/DeveloperPortal/Devices.swift
 index 98b0659..08f74fc 100644
 --- a/Sources/DeveloperPortal/Devices.swift
