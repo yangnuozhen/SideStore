@@ -127,6 +127,11 @@ let socket = WatchSocket()
 try WatchArchive.send(appURL: watch, to: socket)
 try socket.data.write(to: output.appendingPathComponent("stream.bin"))
 try PropertyListSerialization.data(fromPropertyList: socket.options, format: .xml, options: 0).write(to: output.appendingPathComponent("transfer.plist"))
+let alias = output.appendingPathComponent("WatchAlias")
+try FileManager.default.createSymbolicLink(at: alias, withDestinationURL: watch.deletingLastPathComponent())
+let aliasSocket = WatchSocket()
+try WatchArchive.send(appURL: alias.appendingPathComponent("Sample.app"), to: aliasSocket)
+try aliasSocket.data.write(to: output.appendingPathComponent("stream-alias.bin"))
 let failed = WatchSocket()
 failed.responses = [["InstallProgressDict": ["Error": "ApplicationVerificationFailed"]], ["Status": "DataComplete"]]
 try rejects({ try WatchArchive.send(appURL: watch, to: failed) }, "watchOS installation error hidden")
@@ -139,8 +144,8 @@ print("PASS: production Swift graph + sparse ZIP + failure-path fixtures")
 '''
 
 
-def verify_stream(directory):
-    stream = (directory / "stream.bin").read_bytes()
+def verify_stream(directory, filename="stream.bin"):
+    stream = (directory / filename).read_bytes()
     offset = 0
     files = {}
     while stream[offset:offset + 4] != b"PK\x01\x02":
@@ -164,7 +169,11 @@ def verify_stream(directory):
     app = directory / "Host.app/Watch/Sample.app"
     expected = {"Payload/Sample.app/" + p.relative_to(app).as_posix(): p.read_bytes()
                 for p in app.rglob("*") if p.is_file() and not p.is_symlink()}
-    assert expected == payloads, "ZIP changed or omitted payload bytes"
+    assert expected == payloads, ("ZIP changed or omitted payload bytes", {
+        "missing": sorted(expected.keys() - payloads.keys()),
+        "unexpected": sorted(payloads.keys() - expected.keys()),
+        "different": sorted(name for name in expected.keys() & payloads.keys() if expected[name] != payloads[name]),
+    })
     options = plistlib.loads((directory / "transfer.plist").read_bytes())
     assert options["InstallOptionsDictionary"]["DisableDeltaTransfer"] == 1
     print(f"PASS: decoded {len(payloads)} actual Swift-produced ZIP entries, metadata, CRCs and payload bytes")
@@ -192,6 +201,7 @@ def main():
         if result.returncode:
             raise RuntimeError(result.stderr)
         verify_stream(fixture)
+        verify_stream(fixture, "stream-alias.bin")
 
 
 if __name__ == "__main__":

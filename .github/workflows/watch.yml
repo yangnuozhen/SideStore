@@ -2,6 +2,14 @@ name: Personal Watch Support Build
 
 on:
   workflow_dispatch:
+  push:
+    branches: [develop]
+    paths:
+      - 'scripts/watch-support/**'
+      - 'scripts/livecontainer/**'
+      - 'SideStore/Core/**'
+      - 'AltStore/**'
+      - '.github/workflows/watch.yml'
 
 permissions:
   contents: read

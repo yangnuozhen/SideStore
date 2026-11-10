@@ -385,7 +385,11 @@ private enum WatchArchive {
     static let extra: [UInt8] = [0x55,0x54,0x0d,0,7,0xf3,0xa2,0xec,0x60,0xf6,0xa2,0xec,0x60,0xf3,0xa2,0xec,0x60,0x75,0x78,0x0b,0,1,4,0xf5,1,0,0,4,0x14,0,0,0]
 
     static func send(appURL: URL, to socket: WatchSocket) throws {
-        guard let enumerator = FileManager.default.enumerator(at: appURL, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]) else { throw watchFailure("Cannot read signed Watch app") }
+        // Foundation can canonicalize /var to /private/var while enumerating on Darwin.
+        // Derive both sides of the relative path from the same canonical root.
+        let root = appURL.resolvingSymlinksInPath().standardizedFileURL
+        let prefix = root.path.hasSuffix("/") ? root.path : root.path + "/"
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey, .fileSizeKey]) else { throw watchFailure("Cannot read signed Watch app") }
         var entries: [(URL, String, UInt32)] = []
         var total: UInt64 = 0
         for case let url as URL in enumerator {
@@ -393,7 +397,9 @@ private enum WatchArchive {
             guard values.isSymbolicLink != true else { throw watchFailure("Watch archive contains a symbolic link; this topology is unsupported") }
             if values.isRegularFile == true {
                 guard let size = values.fileSize, let length = UInt32(exactly: size) else { throw watchFailure("Watch archive file exceeds ZIP32 size limit") }
-                let name = "Payload/" + appURL.lastPathComponent + "/" + url.path.dropFirst(appURL.path.count + 1)
+                let path = url.standardizedFileURL.path
+                guard path.hasPrefix(prefix) else { throw watchFailure("Watch archive entry is outside the app bundle") }
+                let name = "Payload/" + root.lastPathComponent + "/" + path.dropFirst(prefix.count)
                 entries.append((url, name, length))
                 total += UInt64(length)
             }
